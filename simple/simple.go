@@ -36,68 +36,107 @@ var bananaSellOffer chan int
 
 var bananaBuyOffer chan int
 
-func (agent *Agent) attemptBuy(good string) {
+func waitAndPublish(waitChannel chan int, waitTime int) {
+	for range waitTime {
+		time.Sleep(time.Second)
+	}
+	waitChannel <- 0
+}
+func (agent *Agent) attemptBuy(good string) bool {
 	if agent.item != "none" {
 		fmt.Printf("Agent %d inv not empty; buy failed\n", agent.id)
-		return
+		return false
 	}
 	var sell int
+	waitChannel := make(chan int)
+	go waitAndPublish(waitChannel, 3)
 	if good == "apple" {
-		sell = <-appleSellOffer
-		fmt.Printf("Agent %d fetched a %s sell offer for %d \n", agent.id, good, sell)
-		appleBuyOffer <- agent.buyPrice
+		select {
+		case sell = <-appleSellOffer:
+			fmt.Printf("Agent %d fetched a %s sell offer for %d \n", agent.id, good, sell)
+			appleBuyOffer <- agent.buyPrice
+		case <-waitChannel:
+			fmt.Printf("Agent %d buy took too long\n", agent.id)
+			return false
+		}
+
 	} else {
 		// good == "banana"
-		sell := <-bananaSellOffer
-		fmt.Printf("Agent %d fetched a %s sell offer for %d \n", agent.id, good, sell)
-		bananaBuyOffer <- agent.buyPrice
+		select {
+		case sell := <-bananaSellOffer:
+			fmt.Printf("Agent %d fetched a %s sell offer for %d \n", agent.id, good, sell)
+			bananaBuyOffer <- agent.buyPrice
+		case <-waitChannel:
+			fmt.Printf("Agent %d buy took too long\n", agent.id)
+			return false
+		}
 	}
 	agent.item = good
 	exchange := (agent.buyPrice + sell) / 2
 	agent.coins -= exchange
 	fmt.Printf("Agent %d bought apple for %d\n", agent.id, exchange)
+	return true
 }
 
-func (agent *Agent) attemptSell(good string) {
+func (agent *Agent) attemptSell(good string) bool {
 	if agent.item == "none" {
 		fmt.Printf("Agent %d inv empty; sell failed\n", agent.id)
-		return
+		return false
 	}
 	var buy int
+	waitChannel := make(chan int)
+	go waitAndPublish(waitChannel, 3)
+
 	if good == "apple" {
-		appleSellOffer <- agent.sellPrice
-		fmt.Printf("Agent %d posted a %s sell offer for %d \n", agent.id, "apple", agent.sellPrice)
-		buy = <-appleBuyOffer
+		select {
+		case appleSellOffer <- agent.sellPrice:
+			fmt.Printf("Agent %d posted a %s sell offer for %d \n", agent.id, "apple", agent.sellPrice)
+			buy = <-appleBuyOffer
+		case <-waitChannel:
+			fmt.Printf("Agent %d sell took too long\n", agent.id)
+			return false
+		}
 	} else {
 		// good == "banana"
-		bananaSellOffer <- agent.sellPrice
-		fmt.Printf("Agent %d posted a %s sell offer for %d \n", agent.id, "apple", agent.sellPrice)
-		buy = <-bananaBuyOffer
+		select {
+		case bananaSellOffer <- agent.sellPrice:
+			fmt.Printf("Agent %d posted a %s sell offer for %d \n", agent.id, "apple", agent.sellPrice)
+			buy = <-bananaBuyOffer
+		case <-waitChannel:
+			fmt.Printf("Agent %d sell took too long\n", agent.id)
+			return false
+		}
 	}
 
 	exchange := (agent.sellPrice + buy) / 2
 	agent.item = "none"
 	agent.coins += exchange
 	fmt.Printf("Agent %d sold %s at amount %d\n", agent.id, good, agent.sellPrice)
+	return true
 }
 
 func runAgent(agent *Agent) {
 	for {
-		time.Sleep(time.Second)
+		for range rand.IntN(1000) {
+			time.Sleep(time.Millisecond)
+		}
 		if agent.item == "none" {
-			if rand.IntN(20) <= 10 {
+			fmt.Printf("Agent %d enqueuing to buy %s\n", agent.id, otherItem(agent.produces))
+			success := agent.attemptBuy(otherItem(agent.produces))
+			if !success {
 				fmt.Printf("Agent %d producing %s\n", agent.id, agent.produces)
 				agent.item = agent.produces
-
-			} else {
-				fmt.Printf("Agent %d enqueuing to buy %s\n", agent.id, otherItem(agent.produces))
-				agent.attemptBuy(otherItem(agent.produces))
 			}
 			continue
 		}
+
 		if agent.item == agent.produces {
 			fmt.Printf("Agent %d attempting to sell %s\n", agent.id, agent.produces)
-			agent.attemptSell(agent.produces)
+			success := agent.attemptSell(agent.produces)
+			if !success {
+				fmt.Printf("Agent %d consuming its own %s\n", agent.id, agent.item)
+				agent.item = "none"
+			}
 			continue
 		}
 		if (agent.item == "apple" && agent.produces == "banana") || (agent.item == "banana" && agent.produces == "apple") {
@@ -133,7 +172,7 @@ func Simulation() {
 	bananaBuyOffer = make(chan int)
 	appleBuyOffer = make(chan int)
 	var pool []*Agent = nil
-	for i := range 20 {
+	for i := range 5 {
 		agent := Agent{
 			id:            i,
 			produces:      getItemName(i % 2),
