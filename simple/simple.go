@@ -7,15 +7,18 @@ import (
 )
 
 type Agent struct {
-	id            int
-	produces      string
-	appleUtility  int
-	bananaUtility int
-	buyPrice      int
-	sellPrice     int
-	item          string
-	coins         int
-	state         string
+	id              int
+	produces        string
+	appleUtility    int
+	bananaUtility   int
+	buyPrice        int
+	sellPrice       int
+	item            string
+	coins           int
+	itemsProduced   int
+	applesConsumed  int
+	bananasConsumed int
+	earnedUtility   int
 }
 
 func getItemName(index int) string {
@@ -49,7 +52,7 @@ func (agent *Agent) attemptBuy(good string) bool {
 	}
 	var sell int
 	waitChannel := make(chan int)
-	go waitAndPublish(waitChannel, 3)
+	go waitAndPublish(waitChannel, 1)
 	if good == "apple" {
 		select {
 		case sell = <-appleSellOffer:
@@ -85,7 +88,7 @@ func (agent *Agent) attemptSell(good string) bool {
 	}
 	var buy int
 	waitChannel := make(chan int)
-	go waitAndPublish(waitChannel, 3)
+	go waitAndPublish(waitChannel, 1)
 
 	if good == "apple" {
 		select {
@@ -117,7 +120,7 @@ func (agent *Agent) attemptSell(good string) bool {
 
 func runAgent(agent *Agent) {
 	for {
-		for range rand.IntN(1000) {
+		for range rand.IntN(100) {
 			time.Sleep(time.Millisecond)
 		}
 		if agent.item == "none" {
@@ -125,6 +128,7 @@ func runAgent(agent *Agent) {
 			success := agent.attemptBuy(otherItem(agent.produces))
 			if !success {
 				fmt.Printf("Agent %d producing %s\n", agent.id, agent.produces)
+				agent.itemsProduced += 1
 				agent.item = agent.produces
 			}
 			continue
@@ -135,16 +139,31 @@ func runAgent(agent *Agent) {
 			success := agent.attemptSell(agent.produces)
 			if !success {
 				fmt.Printf("Agent %d consuming its own %s\n", agent.id, agent.item)
+				if agent.item == "apple" {
+					agent.applesConsumed += 1
+					agent.earnedUtility += agent.appleUtility
+				} else {
+					agent.bananasConsumed += 1
+					agent.earnedUtility += agent.bananaUtility
+				}
+
 				agent.item = "none"
 			}
 			continue
 		}
 		if (agent.item == "apple" && agent.produces == "banana") || (agent.item == "banana" && agent.produces == "apple") {
 			fmt.Printf("Agent %d consuming %s\n", agent.id, agent.item)
+			if agent.item == "apple" {
+				agent.applesConsumed += 1
+				agent.earnedUtility += agent.appleUtility
+			} else {
+				agent.bananasConsumed += 1
+				agent.earnedUtility += agent.bananaUtility
+			}
+
 			agent.item = "none"
 		}
 	}
-
 }
 
 func averagePrice(pool []*Agent, itemName string, action string) float32 {
@@ -165,6 +184,26 @@ func averagePrice(pool []*Agent, itemName string, action string) float32 {
 	return float32(price / count)
 }
 
+func printTotals(agents []*Agent) {
+	applesConsumedByAppleMakers := 0
+	applesConsumedByBananaMakers := 0
+	bananasConsumedByAppleMakers := 0
+	bananasConsumedByBananaMakers := 0
+	coins := 0
+	earnedUtility := 0
+	for _, a := range agents {
+		if a.produces == "apple" {
+			applesConsumedByAppleMakers += a.applesConsumed
+			bananasConsumedByAppleMakers += a.bananasConsumed
+		} else {
+			applesConsumedByBananaMakers += a.applesConsumed
+			bananasConsumedByBananaMakers += a.bananasConsumed
+		}
+		coins += a.coins
+		earnedUtility += a.earnedUtility
+	}
+	fmt.Println(applesConsumedByAppleMakers, bananasConsumedByBananaMakers, applesConsumedByBananaMakers, bananasConsumedByAppleMakers, coins, earnedUtility)
+}
 func Simulation() {
 
 	bananaSellOffer = make(chan int)
@@ -172,17 +211,20 @@ func Simulation() {
 	bananaBuyOffer = make(chan int)
 	appleBuyOffer = make(chan int)
 	var pool []*Agent = nil
-	for i := range 5 {
+	for i := range 6 {
 		agent := Agent{
-			id:            i,
-			produces:      getItemName(i % 2),
-			appleUtility:  5 - 3*(1-2*(i%2)), // if i is zero,then (1-2*(i%2)) is 1, and - 3 * 1 makes the first good worth 2
-			bananaUtility: 5 + 3*(1-2*(i%2)), // if i is zero, then the second good is worth 8
-			buyPrice:      rand.IntN(10),
-			sellPrice:     rand.IntN(10),
-			item:          "none",
-			coins:         100,
-			state:         "initialized",
+			id:              i,
+			produces:        getItemName(i % 2),
+			appleUtility:    5 - 3*(1-2*(i%2)), // if i is zero,then (1-2*(i%2)) is 1, and - 3 * 1 makes the first good worth 2
+			bananaUtility:   5 + 3*(1-2*(i%2)), // if i is zero, then the second good is worth 8
+			buyPrice:        rand.IntN(10),
+			sellPrice:       rand.IntN(10),
+			item:            "none",
+			coins:           100,
+			itemsProduced:   0,
+			applesConsumed:  0,
+			bananasConsumed: 0,
+			earnedUtility:   0,
 		}
 
 		fmt.Println(agent)
@@ -199,6 +241,8 @@ func Simulation() {
 		numBananaProducersHoldingApple := 0
 		numBananaProducersHoldingBanana := 0
 		for _, a := range pool {
+			fmt.Println(a)
+
 			if a.produces == "apple" {
 				if a.item == "apple" {
 					numAppleProducersHoldingApple += 1
@@ -215,6 +259,7 @@ func Simulation() {
 				} // else no item
 			}
 		}
-		fmt.Println(numAppleProducersHoldingApple, numAppleProducersHoldingBanana, numBananaProducersHoldingApple, numBananaProducersHoldingBanana)
+		printTotals(pool)
+		//fmt.Println(numAppleProducersHoldingApple, numAppleProducersHoldingBanana, numBananaProducersHoldingApple, numBananaProducersHoldingBanana)
 	}
 }
