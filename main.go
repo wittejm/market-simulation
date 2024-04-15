@@ -1,10 +1,10 @@
 package main
 
 import (
-	"github.com/wittejm/market-simulation/fruitsmoothies"
+	"github.com/wittejm/market-simulation/smoothies"
 )
 
 func main() {
-	fruitsmoothies.Simulation()
-
+	smoothies.Simulation()
+	//SelectOnTwoChannels()
 }
