@@ -1,5 +1,9 @@
 package smoothies
 
+/*
+Traders attempt direct agent to agent sale with short wait time. Lots of
+failing trade attempts.
+*/
 import (
 	"fmt"
 	"math/rand/v2"

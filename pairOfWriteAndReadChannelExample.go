@@ -5,6 +5,7 @@ import (
 	"time"
 )
 
+// MinimalChannelExample comment
 func MinimalChannelExample() {
 	chanA := make(chan string)
 	chanB := make(chan string)
