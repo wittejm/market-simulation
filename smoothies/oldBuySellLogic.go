@@ -43,20 +43,21 @@ func (agent *Agent) attemptBuyOld(good string) bool {
 		agent.coins -= exchange
 		fmt.Printf("Agent %d bought %s for %d\n", agent.id, good, exchange)
 		if good == "fruit" {
-			agent.buyFruitPrice -= 1
+			agent.buyFruitPrice--
 		} else {
-			agent.buySmoothiePrice -= 1
+			agent.buySmoothiePrice--
 		}
 		return true
-	} else {
-		//fmt.Printf("Agent %d buy failed, sale price too high\n", agent.id)
-		if good == "fruit" {
-			agent.buyFruitPrice += 1
-		} else {
-			agent.buySmoothiePrice += 1
-		}
-		return false
 	}
+
+	//fmt.Printf("Agent %d buy failed, sale price too high\n", agent.id)
+	if good == "fruit" {
+		agent.buyFruitPrice++
+	} else {
+		agent.buySmoothiePrice++
+	}
+	return false
+
 }
 
 func (agent *Agent) attemptSellOld(good string) bool {
@@ -93,9 +94,9 @@ func (agent *Agent) attemptSellOld(good string) bool {
 
 	if sell <= buy {
 		if good == "fruit" {
-			agent.sellFruitPrice += 1
+			agent.sellFruitPrice++
 		} else {
-			agent.sellSmoothiePrice += 1
+			agent.sellSmoothiePrice++
 		}
 		exchange := (sell + buy) / 2
 		agent.item = "none"
@@ -103,14 +104,13 @@ func (agent *Agent) attemptSellOld(good string) bool {
 		fmt.Printf("Agent %d sold %s for %d\n", agent.id, good, exchange)
 		return true
 
-	} else {
-		//fmt.Printf("Agent %d sale failed, buy price too low\n", agent.id)
-		if good == "fruit" {
-			agent.sellFruitPrice -= 1
-		} else {
-			agent.sellSmoothiePrice -= 1
-		}
-		return false
 	}
+	//fmt.Printf("Agent %d sale failed, buy price too low\n", agent.id)
+	if good == "fruit" {
+		agent.sellFruitPrice--
+	} else {
+		agent.sellSmoothiePrice--
+	}
+	return false
 
 }
