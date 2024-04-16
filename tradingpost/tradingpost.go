@@ -1,24 +1,34 @@
 package tradingpost
 
 import (
+	"bufio"
 	"fmt"
 	"math/rand/v2"
+	"os"
 	"slices"
+	"sort"
 	"time"
 )
 
 // Agent comment
 type Agent struct {
-	id                int
-	strategy          [16]float32
-	item              string
-	buyFruitPrice     int
-	buySmoothiePrice  int
-	sellFruitPrice    int
-	sellSmoothiePrice int
-	hunger            int
-	coins             int
-	actionCompleted   chan int
+	id                   int
+	strategy             [16]float32
+	item                 string
+	buyFruitPrice        int
+	buySmoothiePrice     int
+	sellFruitPrice       int
+	sellSmoothiePrice    int
+	hunger               int
+	coins                int
+	actionCompleted      chan int
+	numFruitBuys         int
+	numFruitSales        int
+	numSmoothieBuys      int
+	numSmoothieSales     int
+	numFruitGrowth       int
+	numSmoothiesMade     int
+	numSmoothiesConsumed int
 }
 
 // The TradingPost comment
@@ -40,7 +50,7 @@ var tradingPost TradingPost
 var simulationSpeed int // a multiplier
 
 func runTradingPost() {
-	tradingPost.coins = 100
+	tradingPost.coins = 1000000
 	tradingPost.fruit = 100
 	tradingPost.smoothies = 100
 	tradingPost.buyFruitPrice = rand.IntN(9)
@@ -56,7 +66,7 @@ func runTradingPost() {
 	go func() {
 		for {
 			var nextFruitBuyer *Agent = <-tradingPost.buyFruitQueue
-			failure := checkTradeConditions(&tradingPost, nextFruitBuyer, "fruit", "buy")
+			failure := checkTradeConditions(nextFruitBuyer, "fruit", "buy")
 			if failure {
 				nextFruitBuyer.actionCompleted <- 1
 				continue
@@ -66,9 +76,23 @@ func runTradingPost() {
 			nextFruitBuyer.coins -= exchange
 			tradingPost.fruit--
 			nextFruitBuyer.item = "fruit"
+			nextFruitBuyer.numFruitBuys++
 			logAgentAction(nextFruitBuyer.id, fmt.Sprintf("Agent %d completed fruit purchase for %d coins\n", nextFruitBuyer.id, exchange))
 			updateTradePostPrices("sell", "fruit", exchange)
 			nextFruitBuyer.updatePrices("buy", "fruit", exchange)
+			if tradingPost.fruit < 50 {
+				updateTradePostPrices("sell", "fruit", 1000) // Increase the sale price
+			}
+			if tradingPost.fruit > 150 {
+				updateTradePostPrices("sell", "fruit", 0) // Reduce the sale price
+			}
+			if tradingPost.fruit > 250 {
+				updateTradePostPrices("sell", "fruit", 0) // Reduce the sale price
+			}
+			if tradingPost.fruit > 350 {
+				updateTradePostPrices("sell", "fruit", 0) // Reduce the sale price
+			}
+
 			nextFruitBuyer.actionCompleted <- 1
 		}
 	}()
@@ -76,7 +100,7 @@ func runTradingPost() {
 	go func() {
 		for {
 			var nextFruitSeller *Agent = <-tradingPost.sellFruitQueue
-			failure := checkTradeConditions(&tradingPost, nextFruitSeller, "fruit", "sell")
+			failure := checkTradeConditions(nextFruitSeller, "fruit", "sell")
 			if failure {
 				nextFruitSeller.actionCompleted <- 1
 				continue
@@ -87,9 +111,24 @@ func runTradingPost() {
 
 			tradingPost.fruit++
 			nextFruitSeller.item = "none"
+			nextFruitSeller.numFruitSales++
+
 			logAgentAction(nextFruitSeller.id, fmt.Sprintf("Agent %d completed fruit sale for %d coins\n", nextFruitSeller.id, exchange))
 			updateTradePostPrices("buy", "fruit", exchange)
 			nextFruitSeller.updatePrices("sell", "fruit", exchange)
+			if tradingPost.fruit < 50 {
+				updateTradePostPrices("buy", "fruit", 1000) // Increase the buy price
+			}
+			if tradingPost.fruit > 150 {
+				updateTradePostPrices("buy", "fruit", 0) // Reduce the buy price
+			}
+			if tradingPost.fruit > 250 {
+				updateTradePostPrices("buy", "fruit", 0) // Reduce the buy price
+			}
+			if tradingPost.fruit > 350 {
+				updateTradePostPrices("buy", "fruit", 0) // Reduce the buy price
+			}
+
 			nextFruitSeller.actionCompleted <- 1
 		}
 	}()
@@ -97,7 +136,7 @@ func runTradingPost() {
 	go func() {
 		for {
 			var nextSmoothieBuyer *Agent = <-tradingPost.buySmoothieQueue
-			failure := checkTradeConditions(&tradingPost, nextSmoothieBuyer, "smoothie", "buy")
+			failure := checkTradeConditions(nextSmoothieBuyer, "smoothie", "buy")
 			if failure {
 				nextSmoothieBuyer.actionCompleted <- 1
 				continue
@@ -107,9 +146,19 @@ func runTradingPost() {
 			nextSmoothieBuyer.coins -= exchange
 			tradingPost.smoothies--
 			nextSmoothieBuyer.item = "smoothie"
+			nextSmoothieBuyer.numSmoothieBuys++
 			logAgentAction(nextSmoothieBuyer.id, fmt.Sprintf("Agent %d completed smoothie purchase for %d coins\n", nextSmoothieBuyer.id, exchange))
-			updateTradePostPrices("sell", "fruit", exchange)
+			updateTradePostPrices("sell", "smoothie", exchange)
 			nextSmoothieBuyer.updatePrices("buy", "smoothie", exchange)
+			if tradingPost.smoothies < 50 {
+				updateTradePostPrices("sell", "smoothie", 1000) // Increase the sale price
+			}
+			if tradingPost.smoothies < 50 {
+				updateTradePostPrices("sell", "smoothie", 1000) // Increase the buy price
+			}
+			if tradingPost.smoothies > 150 {
+				updateTradePostPrices("sell", "smoothie", 0) // Reduce the buy price
+			}
 			nextSmoothieBuyer.actionCompleted <- 1
 		}
 	}()
@@ -117,7 +166,7 @@ func runTradingPost() {
 	go func() {
 		for {
 			var nextSmoothieSeller *Agent = <-tradingPost.sellSmoothieQueue
-			failure := checkTradeConditions(&tradingPost, nextSmoothieSeller, "smoothie", "sell")
+			failure := checkTradeConditions(nextSmoothieSeller, "smoothie", "sell")
 			if failure {
 				nextSmoothieSeller.actionCompleted <- 1
 				continue
@@ -127,9 +176,16 @@ func runTradingPost() {
 			nextSmoothieSeller.coins += exchange
 			tradingPost.smoothies++
 			nextSmoothieSeller.item = "none"
+			nextSmoothieSeller.numSmoothieSales++
 			logAgentAction(nextSmoothieSeller.id, fmt.Sprintf("Agent %d completed smoothie sale for %d coins\n", nextSmoothieSeller.id, exchange))
 			updateTradePostPrices("buy", "smoothie", exchange)
 			nextSmoothieSeller.updatePrices("sell", "smoothie", exchange)
+			if tradingPost.smoothies < 50 {
+				updateTradePostPrices("buy", "smoothie", 1000) // Increase the buy price
+			}
+			if tradingPost.smoothies > 150 {
+				updateTradePostPrices("buy", "smoothie", 0) // Reduce the buy price
+			}
 			nextSmoothieSeller.actionCompleted <- 1
 		}
 	}()
@@ -141,41 +197,47 @@ func updateTradePostPrices(action, good string, exchange int) {
 		if good == "fruit" {
 			if tradingPost.buyFruitPrice < (exchange) {
 				tradingPost.buyFruitPrice++
+				logTradeFailure(-1, "post buy fruit price increase\n")
+
 			}
 			if tradingPost.buyFruitPrice > (exchange) {
+				logTradeFailure(-1, "post buy fruit price decrease\n")
 				tradingPost.buyFruitPrice--
 			}
-			// if tradingPost.fruit > 200 {
-			// 	tradingPost.buyFruitPrice --
-			// }
 		}
 		if good == "smoothie" {
 			if tradingPost.buySmoothiePrice < (exchange) {
 				tradingPost.buySmoothiePrice++
+				logTradeFailure(-1, "post buy smoothie price increase\n")
+
 			}
 			if tradingPost.buySmoothiePrice > (exchange) {
 				tradingPost.buySmoothiePrice--
+				logTradeFailure(-1, "post buy smoothie price decrease\n")
 			}
-			// if tradingPost.smoothies > 200 {
-			// 	tradingPost.buySmoothiePrice --
-			// }
 		}
-		if action == "sell" {
-			if good == "fruit" {
-				if tradingPost.sellFruitPrice < exchange {
-					tradingPost.sellFruitPrice++
-				}
-				if tradingPost.sellFruitPrice > exchange {
-					tradingPost.sellFruitPrice--
-				}
+	}
+	if action == "sell" {
+		if good == "fruit" {
+			if tradingPost.sellFruitPrice < exchange {
+				tradingPost.sellFruitPrice++
+				logTradeFailure(-1, "post sell fruit price increase\n")
 			}
-			if good == "smoothie" {
-				if tradingPost.sellSmoothiePrice < exchange {
-					tradingPost.sellSmoothiePrice++
-				}
-				if tradingPost.sellSmoothiePrice > exchange {
-					tradingPost.sellSmoothiePrice--
-				}
+			if tradingPost.sellFruitPrice > exchange {
+				tradingPost.sellFruitPrice--
+				logTradeFailure(-1, "post sell fruit price decrease\n")
+
+			}
+		}
+		if good == "smoothie" {
+			if tradingPost.sellSmoothiePrice < exchange {
+				tradingPost.sellSmoothiePrice++
+				logTradeFailure(-1, "post sell smoothie price increase\n")
+
+			}
+			if tradingPost.sellSmoothiePrice > exchange {
+				tradingPost.sellSmoothiePrice--
+				logTradeFailure(-1, "post sell smoothie price decrease\n")
 			}
 		}
 	}
@@ -199,29 +261,35 @@ func (agent *Agent) updatePrices(action, good string, exchange int) {
 				agent.buySmoothiePrice--
 			}
 		}
-		if action == "sell" {
-			if good == "fruit" {
-				if agent.sellFruitPrice < exchange {
-					agent.sellFruitPrice++
-				}
-				if agent.sellFruitPrice > exchange {
-					agent.sellFruitPrice--
-				}
+	}
+	if action == "sell" {
+		if good == "fruit" {
+			if agent.sellFruitPrice < exchange {
+				agent.sellFruitPrice++
 			}
-			if good == "smoothie" {
-				if agent.sellSmoothiePrice < exchange {
-					agent.sellSmoothiePrice++
-				}
-				if agent.sellSmoothiePrice > exchange {
-					agent.sellSmoothiePrice--
-				}
+			if agent.sellFruitPrice > exchange {
+				agent.sellFruitPrice--
+			}
+		}
+		if good == "smoothie" {
+			if agent.sellSmoothiePrice < exchange {
+				agent.sellSmoothiePrice++
+			}
+			if agent.sellSmoothiePrice > exchange {
+				agent.sellSmoothiePrice--
 			}
 		}
 	}
 }
 
-func checkTradeConditions(tradingPost *TradingPost, agent *Agent, good string, action string) bool {
-	exchange := (agent.buyFruitPrice + tradingPost.sellFruitPrice) / 2
+func checkTradeConditions(agent *Agent, good string, action string) bool {
+	var exchange int
+	if good == "fruit" {
+		exchange = (agent.buyFruitPrice + tradingPost.sellFruitPrice) / 2
+	} else {
+		exchange = (agent.buySmoothiePrice + tradingPost.sellSmoothiePrice) / 2
+	}
+
 	if action == "buy" {
 		if agent.item != "none" {
 			logTradeFailure(agent.id, fmt.Sprintf("Agent %d %s purchase failed; inventory not empty\n", agent.id, good))
@@ -238,6 +306,8 @@ func checkTradeConditions(tradingPost *TradingPost, agent *Agent, good string, a
 			}
 			if tradingPost.sellFruitPrice > agent.buyFruitPrice {
 				logTradeFailure(agent.id, fmt.Sprintf("Agent %d %s purchase failed; sell price exceeds buy price %d / %d\n", agent.id, good, tradingPost.sellFruitPrice, agent.buyFruitPrice))
+				agent.updatePrices("buy", "fruit", exchange)
+				updateTradePostPrices("sell", "fruit", exchange)
 				return true
 			}
 		}
@@ -248,6 +318,8 @@ func checkTradeConditions(tradingPost *TradingPost, agent *Agent, good string, a
 			}
 			if tradingPost.sellSmoothiePrice > agent.buySmoothiePrice {
 				logTradeFailure(agent.id, fmt.Sprintf("Agent %d %s purchase failed; sell price exceeds buy price %d / %d\n", agent.id, good, tradingPost.sellSmoothiePrice, agent.buySmoothiePrice))
+				agent.updatePrices("buy", "smoothie", exchange)
+				updateTradePostPrices("sell", "smoothie", exchange)
 				return true
 			}
 		}
@@ -264,12 +336,16 @@ func checkTradeConditions(tradingPost *TradingPost, agent *Agent, good string, a
 		if good == "fruit" {
 			if tradingPost.buyFruitPrice < agent.sellFruitPrice {
 				logTradeFailure(agent.id, fmt.Sprintf("Agent %d %s sale failed; sell price exceeds buy price %d / %d\n", agent.id, good, agent.sellFruitPrice, tradingPost.buyFruitPrice))
+				agent.updatePrices("sell", "fruit", exchange)
+				updateTradePostPrices("buy", "fruit", exchange)
 				return true
 			}
 		}
 		if good == "smoothie" {
 			if tradingPost.buySmoothiePrice < agent.sellSmoothiePrice {
 				logTradeFailure(agent.id, fmt.Sprintf("Agent %d %s sale failed; sell price exceeds buy price %d / %d\n", agent.id, good, agent.sellSmoothiePrice, tradingPost.buySmoothiePrice))
+				agent.updatePrices("sell", "smoothie", exchange)
+				updateTradePostPrices("buy", "smoothie", exchange)
 				return true
 			}
 		}
@@ -336,8 +412,10 @@ func (agent *Agent) growFruit() bool {
 		return true
 	}
 	logAgentAction(agent.id, fmt.Sprintf("Agent %d growing fruit\n", agent.id))
-	time.Sleep(time.Millisecond * time.Duration(1000/simulationSpeed))
+	time.Sleep(time.Millisecond * time.Duration(10*1000/simulationSpeed))
 	agent.item = "fruit"
+	agent.numFruitGrowth++
+
 	return false
 }
 
@@ -348,8 +426,10 @@ func (agent *Agent) makeSmoothie() bool {
 		return true
 	}
 	logAgentAction(agent.id, fmt.Sprintf("Agent %d making smoothie\n", agent.id))
-	time.Sleep(time.Millisecond * time.Duration(1000/simulationSpeed))
+	time.Sleep(time.Millisecond * time.Duration(10*1000/simulationSpeed))
 	agent.item = "smoothie"
+	agent.numSmoothiesMade++
+
 	return false
 }
 
@@ -361,22 +441,23 @@ func (agent *Agent) consumeSmoothie() bool {
 	logAgentAction(agent.id, fmt.Sprintf("Agent %d consuming smoothie\n", agent.id))
 	time.Sleep(time.Millisecond * time.Duration(1000/simulationSpeed))
 	agent.item = "none"
-	agent.hunger = max(agent.hunger-10000, 0)
+	agent.hunger = max(agent.hunger-1000, 0)
+	agent.numSmoothiesConsumed++
 	return false
 }
 
 // Simulation comment!
 func Simulation() {
 
-	simulationSpeed = 10
+	simulationSpeed = 100
 
 	runTradingPost()
-	tradingPost.buyFruitPrice = rand.IntN(10)
-	tradingPost.sellFruitPrice = rand.IntN(10)
-	tradingPost.buySmoothiePrice = rand.IntN(10)
-	tradingPost.sellSmoothiePrice = rand.IntN(10)
+	tradingPost.buyFruitPrice = rand.IntN(100)
+	tradingPost.sellFruitPrice = rand.IntN(100)
+	tradingPost.buySmoothiePrice = rand.IntN(100)
+	tradingPost.sellSmoothiePrice = rand.IntN(100)
 	var pool []*Agent
-	for i := range 5 {
+	for i := range 10 {
 		strategy := [16]float32{}
 		for j := range 16 {
 			strategy[j] = rand.Float32()
@@ -385,12 +466,12 @@ func Simulation() {
 			id:                i,
 			strategy:          strategy,
 			item:              "none",
-			buyFruitPrice:     rand.IntN(10),
-			buySmoothiePrice:  rand.IntN(10),
-			sellFruitPrice:    rand.IntN(10),
-			sellSmoothiePrice: rand.IntN(10),
+			buyFruitPrice:     rand.IntN(100),
+			buySmoothiePrice:  rand.IntN(100),
+			sellFruitPrice:    rand.IntN(100),
+			sellSmoothiePrice: rand.IntN(100),
 			hunger:            0,
-			coins:             100,
+			coins:             1000,
 			actionCompleted:   make(chan int),
 		}
 		fmt.Println("Created agent:", newAgent)
@@ -403,14 +484,41 @@ func Simulation() {
 	}
 	time.Sleep(time.Duration(500/simulationSpeed) * time.Millisecond)
 
-	for {
-		for _, a := range pool {
-			a.hunger += 100
-		}
-		printAgentSummary(pool)
-		time.Sleep(time.Millisecond * time.Duration(1000/simulationSpeed))
-	}
+	var initialBuyFruitPrices []int
+	var initialSellFruitPrices []int
+	for _, a := range pool {
+		initialBuyFruitPrices = append(initialBuyFruitPrices, a.buyFruitPrice)
+		initialSellFruitPrices = append(initialSellFruitPrices, a.sellFruitPrice)
 
+	}
+	slices.Sort(initialBuyFruitPrices)
+	slices.Sort(initialSellFruitPrices)
+
+	go func() {
+		for i := 0; ; i++ {
+			time.Sleep(time.Millisecond * time.Duration(1000/simulationSpeed))
+			if i%1000 == 999 {
+				evolveAgents(&pool)
+				fmt.Println("Agents evolved!")
+			}
+		}
+	}()
+	for i := range 10000 {
+		printSimulationSummary(pool, initialBuyFruitPrices, initialSellFruitPrices)
+		time.Sleep(time.Millisecond * time.Duration(1000/simulationSpeed))
+		printAgentSummary(*(pool[0]))
+		printAgentSummary(*(pool[1]))
+		printAgentSummary(*(pool[2]))
+		printAgentSummary(*(pool[3]))
+		for _, a := range pool {
+			a.hunger += 200
+		}
+		if i%100 == 99 {
+			scanner := bufio.NewScanner(os.Stdin)
+			scanner.Scan()
+
+		}
+	}
 }
 
 func (agent *Agent) attemptExchange(good, action string) {
@@ -436,38 +544,82 @@ func (agent *Agent) attemptExchange(good, action string) {
 	}
 }
 
-func printAgentSummary(pool []*Agent) {
+func printSimulationSummary(pool []*Agent, initialBuyFruitPrices []int, initialSellFruitPrices []int) {
 	hunger := 0
 	coinsSum := 0
 	var buyFruitPrices []int
 	var sellFruitPrices []int
+	var buySmoothiePrices []int
+	var sellSmoothiePrices []int
 	var allCoins []int
+	var hungers []int
 	for _, a := range pool {
 		hunger += a.hunger
 		coinsSum += a.coins
 		allCoins = append(allCoins, a.coins)
 		buyFruitPrices = append(buyFruitPrices, a.buyFruitPrice)
 		sellFruitPrices = append(sellFruitPrices, a.sellFruitPrice)
+		buySmoothiePrices = append(buySmoothiePrices, a.buySmoothiePrice)
+		sellSmoothiePrices = append(sellSmoothiePrices, a.sellSmoothiePrice)
+		hungers = append(hungers, a.hunger)
 
 	}
-	slices.Sort(buyFruitPrices)
-	fmt.Println("buys:", buyFruitPrices, tradingPost.sellFruitPrice)
-	slices.Sort(sellFruitPrices)
-	fmt.Println("sells:", sellFruitPrices, tradingPost.buyFruitPrice)
-	slices.Sort(allCoins)
-	fmt.Println("coins:", allCoins, tradingPost.coins)
 
-	fmt.Println(hunger, coinsSum)
+	slices.Sort(buyFruitPrices)
+	fmt.Println("fruit buys:", buyFruitPrices, tradingPost.sellFruitPrice)
+	slices.Sort(sellFruitPrices)
+	fmt.Println("fruit sells:", sellFruitPrices, tradingPost.buyFruitPrice)
+	fmt.Println("smoothie buys:", buySmoothiePrices, tradingPost.sellSmoothiePrice)
+	fmt.Println("smoothie sells:", sellSmoothiePrices, tradingPost.buySmoothiePrice)
+	//slices.Sort(allCoins)
+	fmt.Println("coins:", allCoins, coinsSum)
+	fmt.Println("hunger:", hungers)
+
+	fmt.Println(hunger, tradingPost.coins, tradingPost.fruit, tradingPost.smoothies, "total hunger, post coins, fruit, smoothies")
 
 }
 
+func printAgentSummary(agent Agent) {
+	fmt.Println(agent.numFruitBuys+agent.numFruitSales+agent.numSmoothieBuys+agent.numSmoothieSales+agent.numFruitGrowth+agent.numSmoothiesMade+agent.numSmoothiesConsumed, "[", agent.numFruitBuys, agent.buyFruitPrice, "], [", agent.numFruitSales, agent.sellFruitPrice, "]", agent.numSmoothieBuys, agent.numSmoothieSales, agent.numFruitGrowth, agent.numSmoothiesMade, agent.numSmoothiesConsumed)
+}
+
 func logAgentAction(id int, message string) {
-	if id == 0 {
+	if false && (id == 0 || id == -1) {
 		fmt.Print(message)
 	}
 }
 func logTradeFailure(id int, message string) {
-	if id == 0 {
+	if false && (id == 0 || id == -1) {
 		fmt.Print(message)
 	}
+}
+
+func evolveAgents(pool *[]*Agent) {
+
+	sort.Slice(*pool, func(i, j int) bool {
+		return (*pool)[i].coins /*-(*pool)[i].hunger */ < (*pool)[j].coins /*-(*pool)[j].hunger */
+	})
+
+	//for i := 0; i < (len(*pool)); i++ {
+	//	if (*pool)[i].hunger > 10000 {
+	//*pool = removeAgent((*pool), i)
+	// }
+	//}
+	deathIndex := rand.IntN(3)
+	copiedIndex := rand.IntN(3) + 7
+	(*pool)[deathIndex].strategy = (*pool)[copiedIndex].strategy
+	(*pool)[deathIndex].item = (*pool)[copiedIndex].item
+	(*pool)[deathIndex].buyFruitPrice = (*pool)[copiedIndex].buyFruitPrice
+	(*pool)[deathIndex].buySmoothiePrice = (*pool)[copiedIndex].buySmoothiePrice
+	(*pool)[deathIndex].sellFruitPrice = (*pool)[copiedIndex].sellFruitPrice
+	(*pool)[deathIndex].sellSmoothiePrice = (*pool)[copiedIndex].sellSmoothiePrice
+	// (*pool)[0].hunger = 0
+	//coins:             1000,
+	//actionCompleted:   make(chan int),
+}
+
+func removeAgent(pool []*Agent, index int) []*Agent {
+	ret := make([]*Agent, 0)
+	ret = append(ret, pool[:index]...)
+	return append(ret, pool[index+1:]...)
 }
