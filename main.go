@@ -7,7 +7,8 @@ import (
 func main() {
 
 	//updateTheValueOfAPointer()
-	//return
 	//tradingpost.PlotResult()
+	//makeAndUpdateAMap()
+
 	tradingpost.Simulation()
 }

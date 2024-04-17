@@ -56,10 +56,10 @@ func plotResult(pool []*Agent) {
 	p2.Title.Text = "Hunger"
 	p2.X.Label.Text = "evolve steps"
 	p2.Y.Label.Text = "Y"
-	fmt.Println("allFruitBuyPrice", allFruitBuyPrice)
-	fmt.Println("allSmoothieBuyPrice", allSmoothieBuyPrice)
-	fmt.Println("allNumFruit", allNumFruit)
-	fmt.Println("allNumSmoothies", allNumSmoothies)
+	fmt.Println("allFruitBuyPrice", allBuyPrices["fruit"])
+	fmt.Println("allSmoothieBuyPrice", allBuyPrices["smoothie"])
+	fmt.Println("allNumFruit", allNumInventory["fruit"])
+	fmt.Println("allNumSmoothies", allNumInventory["smoothie"])
 	var ages []int
 	for _, a := range pool {
 		ages = append(ages, a.age)
@@ -68,10 +68,10 @@ func plotResult(pool []*Agent) {
 	//fmt.Println("allHunger", allHunger)
 
 	err := plotutil.AddLinePoints(p,
-		"Fruit Price", pointsFromArray(allFruitBuyPrice),
-		"Smoothie Price", pointsFromArray(allSmoothieBuyPrice),
-		"All Fruit Count", pointsFromArray(allNumFruit),
-		"All Smoothie Count", pointsFromArray(allNumSmoothies))
+		"Fruit Price", pointsFromArray(allBuyPrices["fruit"]),
+		"Smoothie Price", pointsFromArray(allBuyPrices["smoothie"]),
+		"All Fruit Count", pointsFromArray(allNumInventory["fruit"]),
+		"All Smoothie Count", pointsFromArray(allNumInventory["smoothie"]))
 	if err != nil {
 		panic(err)
 	}
@@ -90,120 +90,62 @@ func plotResult(pool []*Agent) {
 	}
 }
 
-// randomPoints returns some random x, y points.
-func randomPoints(n int) plotter.XYs {
-	pts := make(plotter.XYs, n)
-	for i := range pts {
-		if i == 0 {
-			pts[i].X = rand.Float64()
-		} else {
-			pts[i].X = pts[i-1].X + rand.Float64()
-		}
-		pts[i].Y = pts[i].X + 10*rand.Float64()
-	}
-	return pts
-}
-
 // Agent comment
 type Agent struct {
-	id                   int
-	strategy             [16]float32
-	item                 string
-	buyFruitPrice        int
-	buySmoothiePrice     int
-	sellFruitPrice       int
-	sellSmoothiePrice    int
-	hunger               int
-	coins                int
-	previousCoins        int
-	actionCompleted      chan bool
-	numFruitBuys         int
-	numFruitSales        int
-	numSmoothieBuys      int
-	numSmoothieSales     int
-	numFruitGrowth       int
-	numSmoothiesMade     int
-	numSmoothiesConsumed int
-	age                  int
+	id              int
+	strategy        [16]float32
+	item            string
+	buyPrices       map[string]*int
+	sellPrices      map[string]*int
+	numActions      map[string]*int
+	hunger          int
+	coins           int
+	previousCoins   int
+	actionCompleted chan bool
+	age             int
 }
 
 // The TradingPost comment
 type TradingPost struct {
-	coins             int
-	fruit             int
-	smoothies         int
-	buyFruitPrice     int
-	sellFruitPrice    int
-	buySmoothiePrice  int
-	sellSmoothiePrice int
-	buyFruitQueue     chan *Agent
-	sellFruitQueue    chan *Agent
-	buySmoothieQueue  chan *Agent
-	sellSmoothieQueue chan *Agent
-	mu                sync.Mutex
+	coins      int
+	inventory  map[string]*int
+	buyPrices  map[string]*int
+	sellPrices map[string]*int
+	queues     map[string]*chan *Agent
+	mu         sync.Mutex
 }
 
 var tradingPost TradingPost
 var simulationSpeed int // a multiplier
 
 func getPostPricePointer(action, good string) *int {
-	if good == "fruit" {
-		if action == "buy" {
-			return &tradingPost.buyFruitPrice
-		}
-		if action == "sell" {
-			return &tradingPost.sellFruitPrice
-		}
+	if action == "buy" {
+		return tradingPost.buyPrices[good]
 	}
-	if good == "smoothie" {
-		if action == "buy" {
-			return &tradingPost.buySmoothiePrice
-		}
-		if action == "sell" {
-			return &tradingPost.sellSmoothiePrice
-		}
+	if action == "sell" {
+		return tradingPost.sellPrices[good]
 	}
 	return nil
 }
 
 func getAgentPricePointer(agent *Agent, action, good string) *int {
-	if good == "fruit" {
-		if action == "buy" {
-			return &agent.buyFruitPrice
-		}
-		if action == "sell" {
-			return &agent.sellFruitPrice
-		}
+	if action == "buy" {
+		return agent.buyPrices[good]
 	}
-	if good == "smoothie" {
-		if action == "buy" {
-			return &agent.buySmoothiePrice
-		}
-		if action == "sell" {
-			return &agent.sellSmoothiePrice
-		}
+	if action == "sell" {
+		return agent.sellPrices[good]
 	}
 	return nil
 }
 
 func getAgentCounterPointer(agent *Agent, action, good string) *int {
 	if action == "buy" {
-		if good == "fruit" {
-			return &agent.numFruitBuys
-		}
-		if good == "smoothie" {
-			return &agent.numSmoothieBuys
-		}
+		return agent.numActions[fmt.Sprintf("buy %s", good)]
 	}
 	if action == "sell" {
-		if good == "fruit" {
-			return &agent.numFruitSales
-		}
-		if good == "smoothie" {
-			return &agent.numSmoothieSales
-		}
+		return agent.numActions[fmt.Sprintf("sell %s", good)]
 	}
-	return nil
+	return agent.numActions[action] // for "forage", "grow", "make"
 }
 
 func getCoinsPointer(agent *Agent, actorType string) *int {
@@ -215,7 +157,7 @@ func getCoinsPointer(agent *Agent, actorType string) *int {
 	}
 	return nil
 }
-func getOtherItem(items []string, item string) string {
+func getOtherArrayElement(items []string, item string) string {
 	if item == items[0] {
 		return items[1]
 	}
@@ -226,23 +168,7 @@ func getOtherItem(items []string, item string) string {
 }
 
 func getNextClientQueue(action, good string) chan *Agent {
-	if action == "buy" {
-		if good == "fruit" {
-			return tradingPost.buyFruitQueue
-		}
-		if good == "smoothie" {
-			return tradingPost.buySmoothieQueue
-		}
-	}
-	if action == "sell" {
-		if good == "fruit" {
-			return tradingPost.sellFruitQueue
-		}
-		if good == "smoothie" {
-			return tradingPost.sellSmoothieQueue
-		}
-	}
-	return nil
+	return *tradingPost.queues[fmt.Sprintf("%s %s", action, good)]
 }
 
 func tradeLoop(action, good string) {
@@ -258,7 +184,7 @@ func tradeLoop(action, good string) {
 			tradingPost.mu.Unlock()
 			continue
 		}
-		postAction := getOtherItem([]string{"buy", "sell"}, action)
+		postAction := getOtherArrayElement([]string{"buy", "sell"}, action)
 		clientPrice := *getAgentPricePointer(nextClient, action, good)
 		postPrice := *getPostPricePointer(postAction, good)
 
@@ -292,40 +218,29 @@ func tradeLoop(action, good string) {
 
 		nextClient.actionCompleted <- false
 		tradingPost.mu.Unlock()
-
 	}
-
 }
 
 func getPostInventory(good string) *int {
-	if good == "fruit" {
-		return &tradingPost.fruit
-	}
-	if good == "smoothie" {
-		return &tradingPost.smoothies
-	}
-	return nil
+	return tradingPost.inventory[good]
 }
+
 func runTradingPost() {
 	tradingPost.coins = 1000000
-	tradingPost.fruit = 100
-	tradingPost.smoothies = 100
+	tradingPost.inventory = make(map[string]*int)
+	tradingPost.buyPrices = make(map[string]*int)
+	tradingPost.sellPrices = make(map[string]*int)
+	tradingPost.queues = make(map[string]*chan *Agent)
 
-	tradingPost.buyFruitPrice = rand.IntN(100)
-	tradingPost.sellFruitPrice = rand.IntN(100)
-	tradingPost.buySmoothiePrice = rand.IntN(100)
-	tradingPost.sellSmoothiePrice = rand.IntN(100)
-
-	tradingPost.buyFruitQueue = make(chan *Agent)
-	tradingPost.sellFruitQueue = make(chan *Agent)
-	tradingPost.buySmoothieQueue = make(chan *Agent)
-	tradingPost.sellSmoothieQueue = make(chan *Agent)
-
-	go tradeLoop("buy", "fruit")  // Selling fruit to buyers
-	go tradeLoop("sell", "fruit") // etc.
-	go tradeLoop("buy", "smoothie")
-	go tradeLoop("sell", "smoothie")
-
+	for _, good := range goods {
+		tradingPost.inventory[good] = func() *int { v := 100; return &v }()
+		tradingPost.buyPrices[good] = func() *int { v := rand.IntN(100); return &v }()
+		tradingPost.sellPrices[good] = func() *int { v := rand.IntN(100); return &v }()
+		tradingPost.queues[fmt.Sprintf("buy %s", good)] = func() *chan *Agent { v := make(chan *Agent); return &v }()
+		tradingPost.queues[fmt.Sprintf("sell %s", good)] = func() *chan *Agent { v := make(chan *Agent); return &v }()
+		go tradeLoop("buy", good)  // Selling to buyers
+		go tradeLoop("sell", good) // Buying from sellers
+	}
 }
 
 func updateTradePostPrices(agentId int, action, good string, exchange int) {
@@ -351,7 +266,7 @@ func (agent *Agent) updateAgentPrice(action, good string, exchange int) {
 }
 
 func checkTradeConditions(agent *Agent, action, good string) bool {
-	postAction := getOtherItem([]string{"buy", "sell"}, action)
+	postAction := getOtherArrayElement([]string{"buy", "sell"}, action)
 	postPrice := getPostPricePointer(postAction, good)
 	agentPrice := getAgentPricePointer(agent, action, good)
 	exchange := (*postPrice + *agentPrice) / 2
@@ -462,7 +377,7 @@ func (agent *Agent) growFruit() bool {
 	logAgentAction(agent.id, fmt.Sprintf("Agent %d growing fruit\n", agent.id))
 	time.Sleep(time.Millisecond * time.Duration(10*1000/simulationSpeed))
 	agent.item = "fruit"
-	agent.numFruitGrowth++
+	*agent.numActions["grow"]++
 
 	return false
 }
@@ -476,7 +391,7 @@ func (agent *Agent) makeSmoothie() bool {
 	logAgentAction(agent.id, fmt.Sprintf("Agent %d making smoothie\n", agent.id))
 	time.Sleep(time.Millisecond * time.Duration(10*1000/simulationSpeed))
 	agent.item = "smoothie"
-	agent.numSmoothiesMade++
+	*agent.numActions["make"]++
 
 	return false
 }
@@ -490,21 +405,30 @@ func (agent *Agent) consumeSmoothie() bool {
 	time.Sleep(time.Millisecond * time.Duration(1000/simulationSpeed))
 	agent.item = "none"
 	agent.hunger = max(agent.hunger-10000, 0)
-	agent.numSmoothiesConsumed++
+	*agent.numActions["consume"]++
 	return false
 }
 
-var allFruitBuyPrice []int
-var allSmoothieBuyPrice []int
-var allNumFruit []int
-var allNumSmoothies []int
+var allBuyPrices map[string][]int
+var allNumInventory map[string][]int
 var allHunger []int
+var goods []string
 
 // Simulation comment!
 func Simulation() {
 
 	simulationSpeed = 1000
 
+	goods = []string{"seed", "fruit", "smoothie"}
+
+	allBuyPrices = make(map[string][]int)
+	allNumInventory = make(map[string][]int)
+	allHunger = make([]int, 0)
+
+	for _, good := range goods {
+		allBuyPrices[good] = make([]int, 0)
+		allNumInventory[good] = make([]int, 0)
+	}
 	runTradingPost()
 
 	var pool []*Agent
@@ -513,19 +437,31 @@ func Simulation() {
 		for j := range 16 {
 			strategy[j] = rand.Float32()
 		}
+		buyPrices := make(map[string]*int)
+		sellPrices := make(map[string]*int)
+		numActions := make(map[string]*int)
+		for _, good := range goods {
+			buyPrices[good] = func() *int { v := rand.IntN(100); return &v }()
+			sellPrices[good] = func() *int { v := rand.IntN(100); return &v }()
+			numActions[fmt.Sprintf("buy %s", good)] = func() *int { v := 0; return &v }()
+			numActions[fmt.Sprintf("sell %s", good)] = func() *int { v := 0; return &v }()
+		}
+		numActions["grow"] = func() *int { v := 0; return &v }()
+		numActions["make"] = func() *int { v := 0; return &v }()
+		numActions["consume"] = func() *int { v := 0; return &v }()
+
 		newAgent := Agent{
-			id:                i,
-			strategy:          strategy,
-			item:              "none",
-			buyFruitPrice:     rand.IntN(100),
-			buySmoothiePrice:  rand.IntN(100),
-			sellFruitPrice:    rand.IntN(100),
-			sellSmoothiePrice: rand.IntN(100),
-			hunger:            0,
-			coins:             1000,
-			previousCoins:     1000,
-			actionCompleted:   make(chan bool),
-			age:               0,
+			id:              i,
+			strategy:        strategy,
+			item:            "none",
+			buyPrices:       buyPrices,
+			sellPrices:      sellPrices,
+			hunger:          0,
+			coins:           1000,
+			previousCoins:   1000,
+			actionCompleted: make(chan bool),
+			age:             0,
+			numActions:      numActions,
 		}
 		fmt.Println("Created agent:", newAgent)
 		pool = append(pool, &newAgent)
@@ -535,15 +471,16 @@ func Simulation() {
 			}
 		}()
 	}
+
 	time.Sleep(time.Duration(500/simulationSpeed) * time.Millisecond)
 	go func() {
 		for i := 0; ; i++ {
 			time.Sleep(time.Millisecond * time.Duration(1000/simulationSpeed))
 			if i%1000 == 999 {
-				allFruitBuyPrice = append(allFruitBuyPrice, min(300, tradingPost.buyFruitPrice))
-				allSmoothieBuyPrice = append(allSmoothieBuyPrice, min(300, tradingPost.buySmoothiePrice))
-				allNumFruit = append(allNumFruit, min(300, tradingPost.fruit))
-				allNumSmoothies = append(allNumSmoothies, min(300, tradingPost.smoothies))
+				for _, good := range goods {
+					allBuyPrices[good] = append(allBuyPrices[good], min(300, *tradingPost.buyPrices[good]))
+					allNumInventory[good] = append(allNumInventory[good], min(300, *tradingPost.inventory[good]))
+				}
 				hunger := 0
 				for _, a := range pool {
 					hunger += a.hunger
@@ -554,7 +491,6 @@ func Simulation() {
 				fmt.Println("Agents evolved!")
 				//printAgentSummary("Poorest agent", *(pool[1]))
 				//printAgentSummary("Richest agent", *(pool[9]))
-
 			}
 		}
 	}()
@@ -595,40 +531,38 @@ func (agent *Agent) attemptExchange(action, good string) {
 func printSimulationSummary(pool []*Agent) {
 	hunger := 0
 	coinsSum := 0
-	var buyFruitPrices []int
-	var sellFruitPrices []int
-	var buySmoothiePrices []int
-	var sellSmoothiePrices []int
+	buyPrices := make(map[string][]int)
+	sellPrices := make(map[string][]int)
+	for _, good := range goods {
+		buyPrices[good] = make([]int, 0)
+		sellPrices[good] = make([]int, 0)
+	}
 	var allCoins []int
 	var hungers []int
 	for _, a := range pool {
 		hunger += a.hunger
 		coinsSum += a.coins
 		allCoins = append(allCoins, a.coins)
-		buyFruitPrices = append(buyFruitPrices, a.buyFruitPrice)
-		sellFruitPrices = append(sellFruitPrices, a.sellFruitPrice)
-		buySmoothiePrices = append(buySmoothiePrices, a.buySmoothiePrice)
-		sellSmoothiePrices = append(sellSmoothiePrices, a.sellSmoothiePrice)
+		for _, good := range goods {
+			buyPrices[good] = append(buyPrices[good], *a.buyPrices[good])
+			sellPrices[good] = append(sellPrices[good], *a.sellPrices[good])
+		}
 		hungers = append(hungers, a.hunger)
-
+	}
+	for _, good := range goods {
+		slices.Sort(buyPrices[good])
+		fmt.Printf("%s buys: %v %v", good, buyPrices[good], tradingPost.sellPrices[good])
 	}
 
-	slices.Sort(buyFruitPrices)
-	fmt.Println("fruit buys:", buyFruitPrices, tradingPost.sellFruitPrice)
-	slices.Sort(sellFruitPrices)
-	fmt.Println("fruit sells:", sellFruitPrices, tradingPost.buyFruitPrice)
-	fmt.Println("smoothie buys:", buySmoothiePrices, tradingPost.sellSmoothiePrice)
-	fmt.Println("smoothie sells:", sellSmoothiePrices, tradingPost.buySmoothiePrice)
-	//slices.Sort(allCoins)
 	fmt.Println("coins:", allCoins, coinsSum)
 	fmt.Println("hunger:", hungers)
 
-	fmt.Println(hunger, tradingPost.coins, tradingPost.fruit, tradingPost.smoothies, "total hunger, post coins, fruit, smoothies")
+	fmt.Println(hunger, tradingPost.coins, tradingPost.inventory["fruit"], tradingPost.inventory["smoothie"], "total hunger, post coins, fruit, smoothies")
 
 }
 
 func printAgentSummary(message string, agent Agent) {
-	fmt.Println(message, agent.numFruitBuys+agent.numFruitSales+agent.numSmoothieBuys+agent.numSmoothieSales+agent.numFruitGrowth+agent.numSmoothiesMade+agent.numSmoothiesConsumed, "f b/pr:[", agent.numFruitBuys, agent.buyFruitPrice, "], f s/pr:[", agent.numFruitSales, agent.sellFruitPrice, "], s b/pr:[", agent.numSmoothieBuys, agent.buySmoothiePrice, "], s s/pr:[", agent.numSmoothieSales, agent.sellSmoothiePrice, "]", agent.numFruitGrowth, agent.numSmoothiesMade, agent.numSmoothiesConsumed)
+	fmt.Println(message, "f b/pr:[", agent.numActions["buy fruit"], agent.buyPrices["fruit"], "], f s/pr:[", agent.numActions["sell fruit"], agent.sellPrices["fruit"], "], s b/pr:[", agent.numActions["buy smoothie"], agent.buyPrices["smoothie"], "], s s/pr:[", agent.numActions["sell smoothie"], agent.sellPrices["smoothie"], "]", agent.numActions["grow"], agent.numActions["make"], agent.numActions["consume"])
 }
 
 func logAgentAction(id int, message string) {
@@ -650,7 +584,7 @@ func evolveAgents(pool *[]*Agent) {
 	})
 	for _, a := range *pool {
 		a.previousCoins = a.coins
-		a.age += 1
+		a.age++
 	}
 
 	//for i := 0; i < (len(*pool)); i++ {
@@ -670,13 +604,13 @@ func evolveAgents(pool *[]*Agent) {
 	var metrics []AgentMetrics = make([]AgentMetrics, len(*pool))
 	for _, a := range *pool {
 		metrics[a.id] = AgentMetrics{
-			lastFruitBuys:         a.numFruitBuys - metrics[a.id].lastFruitBuys,
-			lastFruitSales:        a.numFruitSales - metrics[a.id].lastFruitSales,
-			lastSmoothieBuys:      a.numSmoothieBuys - metrics[a.id].lastSmoothieBuys,
-			lastSmoothieSales:     a.numSmoothieSales - metrics[a.id].lastSmoothieSales,
-			lastFruitGrowth:       a.numFruitGrowth - metrics[a.id].lastFruitGrowth,
-			lastSmoothiesMade:     a.numSmoothiesMade - metrics[a.id].lastSmoothiesMade,
-			lastSmoothiesConsumed: a.numSmoothiesConsumed - metrics[a.id].lastSmoothiesConsumed,
+			lastFruitBuys:         *a.numActions["buy fruit"] - metrics[a.id].lastFruitBuys,
+			lastFruitSales:        *a.numActions["sell fruit"] - metrics[a.id].lastFruitSales,
+			lastSmoothieBuys:      *a.numActions["buy smoothie"] - metrics[a.id].lastSmoothieBuys,
+			lastSmoothieSales:     *a.numActions["sell smoothie"] - metrics[a.id].lastSmoothieSales,
+			lastFruitGrowth:       *a.numActions["grow"] - metrics[a.id].lastFruitGrowth,
+			lastSmoothiesMade:     *a.numActions["make"] - metrics[a.id].lastSmoothiesMade,
+			lastSmoothiesConsumed: *a.numActions["consume"] - metrics[a.id].lastSmoothiesConsumed,
 		}
 	}
 
@@ -686,10 +620,10 @@ func evolveAgents(pool *[]*Agent) {
 	copiedIndex := len(*pool) - 1 //rand.IntN(3) + 7
 	(*pool)[deathIndex].strategy = (*pool)[copiedIndex].strategy
 	(*pool)[deathIndex].item = (*pool)[copiedIndex].item
-	(*pool)[deathIndex].buyFruitPrice = (*pool)[copiedIndex].buyFruitPrice
-	(*pool)[deathIndex].buySmoothiePrice = (*pool)[copiedIndex].buySmoothiePrice
-	(*pool)[deathIndex].sellFruitPrice = (*pool)[copiedIndex].sellFruitPrice
-	(*pool)[deathIndex].sellSmoothiePrice = (*pool)[copiedIndex].sellSmoothiePrice
+	for _, good := range goods {
+		*(*pool)[deathIndex].buyPrices[good] = *(*pool)[copiedIndex].buyPrices[good]
+		*(*pool)[deathIndex].sellPrices[good] = *(*pool)[copiedIndex].sellPrices[good]
+	}
 	(*pool)[deathIndex].age = 0
 
 	for i := range 2 {
@@ -699,12 +633,10 @@ func evolveAgents(pool *[]*Agent) {
 		}
 
 		(*pool)[randomizedIndex].item = "none"
-		(*pool)[randomizedIndex].buyFruitPrice = rand.IntN(100)
-		(*pool)[randomizedIndex].buySmoothiePrice = rand.IntN(100)
-		(*pool)[randomizedIndex].sellFruitPrice = rand.IntN(100)
-		(*pool)[randomizedIndex].sellSmoothiePrice = rand.IntN(100)
+		for _, good := range goods {
+			*(*pool)[deathIndex].buyPrices[good] = rand.IntN(100)
+			*(*pool)[deathIndex].sellPrices[good] = rand.IntN(100)
+		}
 		(*pool)[randomizedIndex].age = 0
-
 	}
-
 }
