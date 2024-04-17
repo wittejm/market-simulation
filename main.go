@@ -5,6 +5,9 @@ import (
 )
 
 func main() {
+
+	//updateTheValueOfAPointer()
+	//return
+	//tradingpost.PlotResult()
 	tradingpost.Simulation()
-	//SelectOnTwoChannels()
 }

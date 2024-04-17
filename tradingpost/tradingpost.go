@@ -7,8 +7,102 @@ import (
 	"os"
 	"slices"
 	"sort"
+	"sync"
 	"time"
+
+	"gonum.org/v1/plot"
+	"gonum.org/v1/plot/plotter"
+	"gonum.org/v1/plot/plotutil"
+	"gonum.org/v1/plot/vg"
 )
+
+/*
+This simulation's characteristics:
+	* Agents can: buy/sell fruit/smoothies, grow fruit, make smoothies, consume smoothies
+	* Random initialization of strategy vector
+	* prices move toward the buy/sell's average value after every attempted buy/sell.
+	* evolution function changes the losing agent's strategy and prices to equal the winning agent's
+	* evolution function can either measure coins or coins minus hunger
+
+This simulation's behaviors when learning on a coin measure:
+	* Prices stabilize to an average
+	* Agents learn various sell strategies
+	* Fruit price goes to 1
+	* Agents learn to buy fruit, turn it into smoothies and sell them
+	* Smoothie price goes to 1
+	* Agents learn to grow fruit and sell it for a small profit
+ *
+
+*/
+
+func pointsFromArray(arr []int) plotter.XYs {
+	pts := make(plotter.XYs, len(arr))
+	for i := range pts {
+		pts[i].X = float64(i)
+		pts[i].Y = float64(arr[i])
+	}
+	return pts
+}
+
+func plotResult(pool []*Agent) {
+
+	p := plot.New()
+
+	p.Title.Text = "Simulation"
+	p.X.Label.Text = "evolve steps"
+	p.Y.Label.Text = "Y"
+	p2 := plot.New()
+
+	p2.Title.Text = "Hunger"
+	p2.X.Label.Text = "evolve steps"
+	p2.Y.Label.Text = "Y"
+	fmt.Println("allFruitBuyPrice", allFruitBuyPrice)
+	fmt.Println("allSmoothieBuyPrice", allSmoothieBuyPrice)
+	fmt.Println("allNumFruit", allNumFruit)
+	fmt.Println("allNumSmoothies", allNumSmoothies)
+	var ages []int
+	for _, a := range pool {
+		ages = append(ages, a.age)
+	}
+	fmt.Println("ages", ages)
+	//fmt.Println("allHunger", allHunger)
+
+	err := plotutil.AddLinePoints(p,
+		"Fruit Price", pointsFromArray(allFruitBuyPrice),
+		"Smoothie Price", pointsFromArray(allSmoothieBuyPrice),
+		"All Fruit Count", pointsFromArray(allNumFruit),
+		"All Smoothie Count", pointsFromArray(allNumSmoothies))
+	if err != nil {
+		panic(err)
+	}
+	err2 := plotutil.AddLinePoints(p2,
+		"All Hunger", pointsFromArray(allHunger))
+	if err2 != nil {
+		panic(err2)
+	}
+
+	// Save the plot to a PNG file.
+	if err := p.Save(4*vg.Inch, 4*vg.Inch, "evolve.png"); err != nil {
+		panic(err)
+	}
+	if err := p2.Save(4*vg.Inch, 4*vg.Inch, "hunger.png"); err != nil {
+		panic(err)
+	}
+}
+
+// randomPoints returns some random x, y points.
+func randomPoints(n int) plotter.XYs {
+	pts := make(plotter.XYs, n)
+	for i := range pts {
+		if i == 0 {
+			pts[i].X = rand.Float64()
+		} else {
+			pts[i].X = pts[i-1].X + rand.Float64()
+		}
+		pts[i].Y = pts[i].X + 10*rand.Float64()
+	}
+	return pts
+}
 
 // Agent comment
 type Agent struct {
@@ -21,7 +115,8 @@ type Agent struct {
 	sellSmoothiePrice    int
 	hunger               int
 	coins                int
-	actionCompleted      chan int
+	previousCoins        int
+	actionCompleted      chan bool
 	numFruitBuys         int
 	numFruitSales        int
 	numSmoothieBuys      int
@@ -29,6 +124,7 @@ type Agent struct {
 	numFruitGrowth       int
 	numSmoothiesMade     int
 	numSmoothiesConsumed int
+	age                  int
 }
 
 // The TradingPost comment
@@ -44,285 +140,244 @@ type TradingPost struct {
 	sellFruitQueue    chan *Agent
 	buySmoothieQueue  chan *Agent
 	sellSmoothieQueue chan *Agent
+	mu                sync.Mutex
 }
 
 var tradingPost TradingPost
 var simulationSpeed int // a multiplier
 
+func getPostPricePointer(action, good string) *int {
+	if good == "fruit" {
+		if action == "buy" {
+			return &tradingPost.buyFruitPrice
+		}
+		if action == "sell" {
+			return &tradingPost.sellFruitPrice
+		}
+	}
+	if good == "smoothie" {
+		if action == "buy" {
+			return &tradingPost.buySmoothiePrice
+		}
+		if action == "sell" {
+			return &tradingPost.sellSmoothiePrice
+		}
+	}
+	return nil
+}
+
+func getAgentPricePointer(agent *Agent, action, good string) *int {
+	if good == "fruit" {
+		if action == "buy" {
+			return &agent.buyFruitPrice
+		}
+		if action == "sell" {
+			return &agent.sellFruitPrice
+		}
+	}
+	if good == "smoothie" {
+		if action == "buy" {
+			return &agent.buySmoothiePrice
+		}
+		if action == "sell" {
+			return &agent.sellSmoothiePrice
+		}
+	}
+	return nil
+}
+
+func getAgentCounterPointer(agent *Agent, action, good string) *int {
+	if action == "buy" {
+		if good == "fruit" {
+			return &agent.numFruitBuys
+		}
+		if good == "smoothie" {
+			return &agent.numSmoothieBuys
+		}
+	}
+	if action == "sell" {
+		if good == "fruit" {
+			return &agent.numFruitSales
+		}
+		if good == "smoothie" {
+			return &agent.numSmoothieSales
+		}
+	}
+	return nil
+}
+
+func getCoinsPointer(agent *Agent, actorType string) *int {
+	if actorType == "agent" {
+		return &agent.coins
+	}
+	if actorType == "post" {
+		return &tradingPost.coins
+	}
+	return nil
+}
+func getOtherItem(items []string, item string) string {
+	if item == items[0] {
+		return items[1]
+	}
+	if item == items[1] {
+		return items[0]
+	}
+	return ""
+}
+
+func getNextClientQueue(action, good string) chan *Agent {
+	if action == "buy" {
+		if good == "fruit" {
+			return tradingPost.buyFruitQueue
+		}
+		if good == "smoothie" {
+			return tradingPost.buySmoothieQueue
+		}
+	}
+	if action == "sell" {
+		if good == "fruit" {
+			return tradingPost.sellFruitQueue
+		}
+		if good == "smoothie" {
+			return tradingPost.sellSmoothieQueue
+		}
+	}
+	return nil
+}
+
+func tradeLoop(action, good string) {
+	for {
+		nextClientQueue := getNextClientQueue(action, good)
+		nextClient := <-nextClientQueue
+		tradingPost.mu.Lock()
+		logAgentAction(nextClient.id, fmt.Sprintf("initiated trade: Agent %d %s %s\n", nextClient.id, action, good))
+		failure := checkTradeConditions(nextClient, action, good)
+		if failure {
+			logTradeFailure(nextClient.id, fmt.Sprintf("trade failure %s %s\n", action, good))
+			nextClient.actionCompleted <- true
+			tradingPost.mu.Unlock()
+			continue
+		}
+		postAction := getOtherItem([]string{"buy", "sell"}, action)
+		clientPrice := *getAgentPricePointer(nextClient, action, good)
+		postPrice := *getPostPricePointer(postAction, good)
+
+		exchange := (clientPrice + postPrice) / 2
+		postCoins := getCoinsPointer(nil, "post")
+		agentCoins := getCoinsPointer(nextClient, "agent")
+		postInventory := getPostInventory(good)
+		if action == "buy" {
+			*postCoins += exchange
+			*agentCoins -= exchange
+			nextClient.item = good
+			*postInventory--
+		}
+		if action == "sell" {
+			*postCoins -= exchange
+			*agentCoins += exchange
+			nextClient.item = "none"
+			*postInventory++
+		}
+		logAgentAction(nextClient.id, fmt.Sprintf("Agent %d completed %s %s for %d. coins: %d\n", nextClient.id, action, good, exchange, nextClient.coins))
+		updateTradePostPrices(nextClient.id, action, good, exchange)
+		nextClient.updateAgentPrice(action, good, exchange)
+		if *postInventory < 50 {
+			//logTradeFailure(nextClient.id, fmt.Sprintf("Low post inventory; increasing %s %s price\n", action, good))
+			updateTradePostPrices(nextClient.id, action, good, 1000)
+		}
+		if *postInventory > 150 {
+			//logTradeFailure(nextClient.id, fmt.Sprintf("High post inventory; decreasing %s %s price\n", action, good))
+			updateTradePostPrices(nextClient.id, action, good, 1)
+		}
+
+		nextClient.actionCompleted <- false
+		tradingPost.mu.Unlock()
+
+	}
+
+}
+
+func getPostInventory(good string) *int {
+	if good == "fruit" {
+		return &tradingPost.fruit
+	}
+	if good == "smoothie" {
+		return &tradingPost.smoothies
+	}
+	return nil
+}
 func runTradingPost() {
 	tradingPost.coins = 1000000
 	tradingPost.fruit = 100
 	tradingPost.smoothies = 100
-	tradingPost.buyFruitPrice = rand.IntN(9)
-	tradingPost.sellFruitPrice = tradingPost.buyFruitPrice + 1
-	tradingPost.buySmoothiePrice = rand.IntN(9)
-	tradingPost.sellSmoothiePrice = tradingPost.buyFruitPrice + 1
+
+	tradingPost.buyFruitPrice = rand.IntN(100)
+	tradingPost.sellFruitPrice = rand.IntN(100)
+	tradingPost.buySmoothiePrice = rand.IntN(100)
+	tradingPost.sellSmoothiePrice = rand.IntN(100)
+
 	tradingPost.buyFruitQueue = make(chan *Agent)
 	tradingPost.sellFruitQueue = make(chan *Agent)
 	tradingPost.buySmoothieQueue = make(chan *Agent)
 	tradingPost.sellSmoothieQueue = make(chan *Agent)
 
-	// Selling fruit to buyers
-	go func() {
-		for {
-			var nextFruitBuyer *Agent = <-tradingPost.buyFruitQueue
-			failure := checkTradeConditions(nextFruitBuyer, "fruit", "buy")
-			if failure {
-				nextFruitBuyer.actionCompleted <- 1
-				continue
-			}
-			exchange := (nextFruitBuyer.buyFruitPrice + tradingPost.sellFruitPrice) / 2
-			tradingPost.coins += exchange
-			nextFruitBuyer.coins -= exchange
-			tradingPost.fruit--
-			nextFruitBuyer.item = "fruit"
-			nextFruitBuyer.numFruitBuys++
-			logAgentAction(nextFruitBuyer.id, fmt.Sprintf("Agent %d completed fruit purchase for %d coins\n", nextFruitBuyer.id, exchange))
-			updateTradePostPrices("sell", "fruit", exchange)
-			nextFruitBuyer.updatePrices("buy", "fruit", exchange)
-			if tradingPost.fruit < 50 {
-				updateTradePostPrices("sell", "fruit", 1000) // Increase the sale price
-			}
-			if tradingPost.fruit > 150 {
-				updateTradePostPrices("sell", "fruit", 0) // Reduce the sale price
-			}
-			if tradingPost.fruit > 250 {
-				updateTradePostPrices("sell", "fruit", 0) // Reduce the sale price
-			}
-			if tradingPost.fruit > 350 {
-				updateTradePostPrices("sell", "fruit", 0) // Reduce the sale price
-			}
+	go tradeLoop("buy", "fruit")  // Selling fruit to buyers
+	go tradeLoop("sell", "fruit") // etc.
+	go tradeLoop("buy", "smoothie")
+	go tradeLoop("sell", "smoothie")
 
-			nextFruitBuyer.actionCompleted <- 1
-		}
-	}()
-	// Buying fruit from sellers
-	go func() {
-		for {
-			var nextFruitSeller *Agent = <-tradingPost.sellFruitQueue
-			failure := checkTradeConditions(nextFruitSeller, "fruit", "sell")
-			if failure {
-				nextFruitSeller.actionCompleted <- 1
-				continue
-			}
-			exchange := (nextFruitSeller.sellFruitPrice + tradingPost.buyFruitPrice) / 2
-			tradingPost.coins -= exchange
-			nextFruitSeller.coins += exchange
-
-			tradingPost.fruit++
-			nextFruitSeller.item = "none"
-			nextFruitSeller.numFruitSales++
-
-			logAgentAction(nextFruitSeller.id, fmt.Sprintf("Agent %d completed fruit sale for %d coins\n", nextFruitSeller.id, exchange))
-			updateTradePostPrices("buy", "fruit", exchange)
-			nextFruitSeller.updatePrices("sell", "fruit", exchange)
-			if tradingPost.fruit < 50 {
-				updateTradePostPrices("buy", "fruit", 1000) // Increase the buy price
-			}
-			if tradingPost.fruit > 150 {
-				updateTradePostPrices("buy", "fruit", 0) // Reduce the buy price
-			}
-			if tradingPost.fruit > 250 {
-				updateTradePostPrices("buy", "fruit", 0) // Reduce the buy price
-			}
-			if tradingPost.fruit > 350 {
-				updateTradePostPrices("buy", "fruit", 0) // Reduce the buy price
-			}
-
-			nextFruitSeller.actionCompleted <- 1
-		}
-	}()
-	// Selling smoothies to buyers
-	go func() {
-		for {
-			var nextSmoothieBuyer *Agent = <-tradingPost.buySmoothieQueue
-			failure := checkTradeConditions(nextSmoothieBuyer, "smoothie", "buy")
-			if failure {
-				nextSmoothieBuyer.actionCompleted <- 1
-				continue
-			}
-			exchange := (nextSmoothieBuyer.buySmoothiePrice + tradingPost.sellSmoothiePrice) / 2
-			tradingPost.coins += exchange
-			nextSmoothieBuyer.coins -= exchange
-			tradingPost.smoothies--
-			nextSmoothieBuyer.item = "smoothie"
-			nextSmoothieBuyer.numSmoothieBuys++
-			logAgentAction(nextSmoothieBuyer.id, fmt.Sprintf("Agent %d completed smoothie purchase for %d coins\n", nextSmoothieBuyer.id, exchange))
-			updateTradePostPrices("sell", "smoothie", exchange)
-			nextSmoothieBuyer.updatePrices("buy", "smoothie", exchange)
-			if tradingPost.smoothies < 50 {
-				updateTradePostPrices("sell", "smoothie", 1000) // Increase the sale price
-			}
-			if tradingPost.smoothies < 50 {
-				updateTradePostPrices("sell", "smoothie", 1000) // Increase the buy price
-			}
-			if tradingPost.smoothies > 150 {
-				updateTradePostPrices("sell", "smoothie", 0) // Reduce the buy price
-			}
-			nextSmoothieBuyer.actionCompleted <- 1
-		}
-	}()
-	// Buying smoothies from sellers
-	go func() {
-		for {
-			var nextSmoothieSeller *Agent = <-tradingPost.sellSmoothieQueue
-			failure := checkTradeConditions(nextSmoothieSeller, "smoothie", "sell")
-			if failure {
-				nextSmoothieSeller.actionCompleted <- 1
-				continue
-			}
-			exchange := (nextSmoothieSeller.sellSmoothiePrice + tradingPost.buySmoothiePrice) / 2
-			tradingPost.coins -= exchange
-			nextSmoothieSeller.coins += exchange
-			tradingPost.smoothies++
-			nextSmoothieSeller.item = "none"
-			nextSmoothieSeller.numSmoothieSales++
-			logAgentAction(nextSmoothieSeller.id, fmt.Sprintf("Agent %d completed smoothie sale for %d coins\n", nextSmoothieSeller.id, exchange))
-			updateTradePostPrices("buy", "smoothie", exchange)
-			nextSmoothieSeller.updatePrices("sell", "smoothie", exchange)
-			if tradingPost.smoothies < 50 {
-				updateTradePostPrices("buy", "smoothie", 1000) // Increase the buy price
-			}
-			if tradingPost.smoothies > 150 {
-				updateTradePostPrices("buy", "smoothie", 0) // Reduce the buy price
-			}
-			nextSmoothieSeller.actionCompleted <- 1
-		}
-	}()
 }
 
-func updateTradePostPrices(action, good string, exchange int) {
-
-	if action == "buy" {
-		if good == "fruit" {
-			if tradingPost.buyFruitPrice < (exchange) {
-				tradingPost.buyFruitPrice++
-				logTradeFailure(-1, "post buy fruit price increase\n")
-
-			}
-			if tradingPost.buyFruitPrice > (exchange) {
-				logTradeFailure(-1, "post buy fruit price decrease\n")
-				tradingPost.buyFruitPrice--
-			}
-		}
-		if good == "smoothie" {
-			if tradingPost.buySmoothiePrice < (exchange) {
-				tradingPost.buySmoothiePrice++
-				logTradeFailure(-1, "post buy smoothie price increase\n")
-
-			}
-			if tradingPost.buySmoothiePrice > (exchange) {
-				tradingPost.buySmoothiePrice--
-				logTradeFailure(-1, "post buy smoothie price decrease\n")
-			}
-		}
+func updateTradePostPrices(agentId int, action, good string, exchange int) {
+	pricePointer := getPostPricePointer(action, good)
+	if *pricePointer < exchange {
+		*pricePointer++
+		logTradeFailure(agentId, fmt.Sprintf("post price below exchange: %s %s price increase\n", action, good))
 	}
-	if action == "sell" {
-		if good == "fruit" {
-			if tradingPost.sellFruitPrice < exchange {
-				tradingPost.sellFruitPrice++
-				logTradeFailure(-1, "post sell fruit price increase\n")
-			}
-			if tradingPost.sellFruitPrice > exchange {
-				tradingPost.sellFruitPrice--
-				logTradeFailure(-1, "post sell fruit price decrease\n")
-
-			}
-		}
-		if good == "smoothie" {
-			if tradingPost.sellSmoothiePrice < exchange {
-				tradingPost.sellSmoothiePrice++
-				logTradeFailure(-1, "post sell smoothie price increase\n")
-
-			}
-			if tradingPost.sellSmoothiePrice > exchange {
-				tradingPost.sellSmoothiePrice--
-				logTradeFailure(-1, "post sell smoothie price decrease\n")
-			}
-		}
+	if *pricePointer > exchange {
+		*pricePointer--
+		logTradeFailure(agentId, fmt.Sprintf("post price above exchange:  %s %s price decrease\n", action, good))
 	}
 }
 
-func (agent *Agent) updatePrices(action, good string, exchange int) {
-	if action == "buy" {
-		if good == "fruit" {
-			if agent.buyFruitPrice < (exchange) {
-				agent.buyFruitPrice++
-			}
-			if agent.buyFruitPrice > (exchange) {
-				agent.buyFruitPrice--
-			}
-		}
-		if good == "smoothie" {
-			if agent.buySmoothiePrice < (exchange) {
-				agent.buySmoothiePrice++
-			}
-			if agent.buySmoothiePrice > (exchange) {
-				agent.buySmoothiePrice--
-			}
-		}
+func (agent *Agent) updateAgentPrice(action, good string, exchange int) {
+	pricePointer := getAgentPricePointer(agent, action, good)
+	if *pricePointer < exchange {
+		*pricePointer++
 	}
-	if action == "sell" {
-		if good == "fruit" {
-			if agent.sellFruitPrice < exchange {
-				agent.sellFruitPrice++
-			}
-			if agent.sellFruitPrice > exchange {
-				agent.sellFruitPrice--
-			}
-		}
-		if good == "smoothie" {
-			if agent.sellSmoothiePrice < exchange {
-				agent.sellSmoothiePrice++
-			}
-			if agent.sellSmoothiePrice > exchange {
-				agent.sellSmoothiePrice--
-			}
-		}
+	if *pricePointer > exchange {
+		*pricePointer--
 	}
 }
 
-func checkTradeConditions(agent *Agent, good string, action string) bool {
-	var exchange int
-	if good == "fruit" {
-		exchange = (agent.buyFruitPrice + tradingPost.sellFruitPrice) / 2
-	} else {
-		exchange = (agent.buySmoothiePrice + tradingPost.sellSmoothiePrice) / 2
-	}
+func checkTradeConditions(agent *Agent, action, good string) bool {
+	postAction := getOtherItem([]string{"buy", "sell"}, action)
+	postPrice := getPostPricePointer(postAction, good)
+	agentPrice := getAgentPricePointer(agent, action, good)
+	exchange := (*postPrice + *agentPrice) / 2
 
 	if action == "buy" {
 		if agent.item != "none" {
 			logTradeFailure(agent.id, fmt.Sprintf("Agent %d %s purchase failed; inventory not empty\n", agent.id, good))
 			return true
 		}
+		if *agentPrice < *postPrice {
+			// agent won't spend more than its buy price.
+			logTradeFailure(agent.id, fmt.Sprintf("Agent %d %s purchase failed; post sell price exceeds agent buy price %d / %d\n", agent.id, good, *postPrice, *agentPrice))
+			*agentPrice++
+			*postPrice--
+			return true
+		}
 		if agent.coins < exchange {
 			logTradeFailure(agent.id, fmt.Sprintf("Agent %d %s purchase failed; too few coins %d / %d\n", agent.id, good, agent.coins, exchange))
 			return true
 		}
-		if good == "fruit" {
-			if tradingPost.fruit <= 0 {
-				logTradeFailure(agent.id, fmt.Sprintf("Agent %d %s purchase failed; post stock empty\n", agent.id, good))
-				return true
-			}
-			if tradingPost.sellFruitPrice > agent.buyFruitPrice {
-				logTradeFailure(agent.id, fmt.Sprintf("Agent %d %s purchase failed; sell price exceeds buy price %d / %d\n", agent.id, good, tradingPost.sellFruitPrice, agent.buyFruitPrice))
-				agent.updatePrices("buy", "fruit", exchange)
-				updateTradePostPrices("sell", "fruit", exchange)
-				return true
-			}
+		inventory := *getPostInventory(good)
+		if inventory <= 0 {
+			logTradeFailure(agent.id, fmt.Sprintf("Agent %d %s purchase failed; post stock empty\n", agent.id, good))
+			return true
 		}
-		if good == "smoothie" {
-			if tradingPost.smoothies <= 0 {
-				logTradeFailure(agent.id, fmt.Sprintf("Agent %d %s purchase failed; post stock empty\n", agent.id, good))
-				return true
-			}
-			if tradingPost.sellSmoothiePrice > agent.buySmoothiePrice {
-				logTradeFailure(agent.id, fmt.Sprintf("Agent %d %s purchase failed; sell price exceeds buy price %d / %d\n", agent.id, good, tradingPost.sellSmoothiePrice, agent.buySmoothiePrice))
-				agent.updatePrices("buy", "smoothie", exchange)
-				updateTradePostPrices("sell", "smoothie", exchange)
-				return true
-			}
-		}
+
 	}
 	if action == "sell" {
 		if agent.item != good {
@@ -333,21 +388,12 @@ func checkTradeConditions(agent *Agent, good string, action string) bool {
 			logTradeFailure(agent.id, fmt.Sprintf("Agent %d %s sale failed; post too few coins %d / %d\n", agent.id, good, tradingPost.coins, exchange))
 			return true
 		}
-		if good == "fruit" {
-			if tradingPost.buyFruitPrice < agent.sellFruitPrice {
-				logTradeFailure(agent.id, fmt.Sprintf("Agent %d %s sale failed; sell price exceeds buy price %d / %d\n", agent.id, good, agent.sellFruitPrice, tradingPost.buyFruitPrice))
-				agent.updatePrices("sell", "fruit", exchange)
-				updateTradePostPrices("buy", "fruit", exchange)
-				return true
-			}
-		}
-		if good == "smoothie" {
-			if tradingPost.buySmoothiePrice < agent.sellSmoothiePrice {
-				logTradeFailure(agent.id, fmt.Sprintf("Agent %d %s sale failed; sell price exceeds buy price %d / %d\n", agent.id, good, agent.sellSmoothiePrice, tradingPost.buySmoothiePrice))
-				agent.updatePrices("sell", "smoothie", exchange)
-				updateTradePostPrices("buy", "smoothie", exchange)
-				return true
-			}
+		if *agentPrice > *postPrice {
+			// agent won't sell for less than its sale price.
+			logTradeFailure(agent.id, fmt.Sprintf("Agent %d %s purchase failed; agent sell price exceeds post buy price %d / %d\n", agent.id, good, *agentPrice, *postPrice))
+			*agentPrice--
+			*postPrice++
+			return true
 		}
 	}
 	return false
@@ -386,22 +432,24 @@ func (agent *Agent) selectAction() {
 		if rand.Float32()+0.3 < agent.strategy[hungerIndex] {
 			agent.growFruit()
 		} else if rand.Float32() < agent.strategy[4+hungerIndex] {
-			agent.attemptExchange("fruit", "buy")
+			agent.attemptExchange("buy", "fruit")
 		} else {
-			agent.attemptExchange("smoothie", "buy")
+			agent.attemptExchange("buy", "smoothie")
 		}
 	} else if agent.item == "fruit" {
 		if rand.Float32() < agent.strategy[8+hungerIndex] {
 			agent.makeSmoothie()
 		} else {
-			agent.attemptExchange("fruit", "sell")
+			agent.attemptExchange("sell", "fruit")
 		}
 	} else {
 		// has a smoothie
 		if rand.Float32()-0.3 < agent.strategy[12+hungerIndex] {
 			agent.consumeSmoothie()
 		} else {
-			agent.attemptExchange("smoothie", "sell")
+			//agent.consumeSmoothie()
+
+			agent.attemptExchange("sell", "smoothie")
 		}
 	}
 }
@@ -441,23 +489,26 @@ func (agent *Agent) consumeSmoothie() bool {
 	logAgentAction(agent.id, fmt.Sprintf("Agent %d consuming smoothie\n", agent.id))
 	time.Sleep(time.Millisecond * time.Duration(1000/simulationSpeed))
 	agent.item = "none"
-	agent.hunger = max(agent.hunger-1000, 0)
+	agent.hunger = max(agent.hunger-10000, 0)
 	agent.numSmoothiesConsumed++
 	return false
 }
 
+var allFruitBuyPrice []int
+var allSmoothieBuyPrice []int
+var allNumFruit []int
+var allNumSmoothies []int
+var allHunger []int
+
 // Simulation comment!
 func Simulation() {
 
-	simulationSpeed = 100
+	simulationSpeed = 1000
 
 	runTradingPost()
-	tradingPost.buyFruitPrice = rand.IntN(100)
-	tradingPost.sellFruitPrice = rand.IntN(100)
-	tradingPost.buySmoothiePrice = rand.IntN(100)
-	tradingPost.sellSmoothiePrice = rand.IntN(100)
+
 	var pool []*Agent
-	for i := range 10 {
+	for i := range 30 {
 		strategy := [16]float32{}
 		for j := range 16 {
 			strategy[j] = rand.Float32()
@@ -472,7 +523,9 @@ func Simulation() {
 			sellSmoothiePrice: rand.IntN(100),
 			hunger:            0,
 			coins:             1000,
-			actionCompleted:   make(chan int),
+			previousCoins:     1000,
+			actionCompleted:   make(chan bool),
+			age:               0,
 		}
 		fmt.Println("Created agent:", newAgent)
 		pool = append(pool, &newAgent)
@@ -483,68 +536,63 @@ func Simulation() {
 		}()
 	}
 	time.Sleep(time.Duration(500/simulationSpeed) * time.Millisecond)
-
-	var initialBuyFruitPrices []int
-	var initialSellFruitPrices []int
-	for _, a := range pool {
-		initialBuyFruitPrices = append(initialBuyFruitPrices, a.buyFruitPrice)
-		initialSellFruitPrices = append(initialSellFruitPrices, a.sellFruitPrice)
-
-	}
-	slices.Sort(initialBuyFruitPrices)
-	slices.Sort(initialSellFruitPrices)
-
 	go func() {
 		for i := 0; ; i++ {
 			time.Sleep(time.Millisecond * time.Duration(1000/simulationSpeed))
 			if i%1000 == 999 {
+				allFruitBuyPrice = append(allFruitBuyPrice, min(300, tradingPost.buyFruitPrice))
+				allSmoothieBuyPrice = append(allSmoothieBuyPrice, min(300, tradingPost.buySmoothiePrice))
+				allNumFruit = append(allNumFruit, min(300, tradingPost.fruit))
+				allNumSmoothies = append(allNumSmoothies, min(300, tradingPost.smoothies))
+				hunger := 0
+				for _, a := range pool {
+					hunger += a.hunger
+				}
+				allHunger = append(allHunger, hunger)
 				evolveAgents(&pool)
+				plotResult(pool)
 				fmt.Println("Agents evolved!")
+				//printAgentSummary("Poorest agent", *(pool[1]))
+				//printAgentSummary("Richest agent", *(pool[9]))
+
 			}
 		}
 	}()
-	for i := range 10000 {
-		printSimulationSummary(pool, initialBuyFruitPrices, initialSellFruitPrices)
-		time.Sleep(time.Millisecond * time.Duration(1000/simulationSpeed))
-		printAgentSummary(*(pool[0]))
-		printAgentSummary(*(pool[1]))
-		printAgentSummary(*(pool[2]))
-		printAgentSummary(*(pool[3]))
-		for _, a := range pool {
-			a.hunger += 200
-		}
-		if i%100 == 99 {
-			scanner := bufio.NewScanner(os.Stdin)
-			scanner.Scan()
 
+	go func() {
+		for {
+			time.Sleep(time.Millisecond * time.Duration(1000/simulationSpeed))
+			for _, a := range pool {
+				a.hunger += 200
+			}
 		}
+	}()
+
+	for {
+		scanner := bufio.NewScanner(os.Stdin)
+		scanner.Scan()
+		printSimulationSummary(pool)
+		time.Sleep(time.Millisecond * time.Duration(1000/simulationSpeed))
+		//printAgentSummary("Poorest agent", *(pool[0]))
+		//printAgentSummary("Richest agent", *(pool[9]))
+
 	}
 }
 
-func (agent *Agent) attemptExchange(good, action string) {
+func (agent *Agent) attemptExchange(action, good string) {
 	time.Sleep(time.Millisecond * time.Duration(1000/simulationSpeed))
 
 	logAgentAction(agent.id, fmt.Sprintf("Agent %d attempting %s of %s\n", agent.id, action, good))
-	if good == "fruit" {
-		if action == "buy" {
-			tradingPost.buyFruitQueue <- agent
-			<-agent.actionCompleted
-		} else {
-			tradingPost.sellFruitQueue <- agent
-			<-agent.actionCompleted
-		}
-	} else {
-		if action == "buy" {
-			tradingPost.buySmoothieQueue <- agent
-			<-agent.actionCompleted
-		} else {
-			tradingPost.sellSmoothieQueue <- agent
-			<-agent.actionCompleted
-		}
+	clientChan := getNextClientQueue(action, good)
+	clientChan <- agent
+	failure := <-agent.actionCompleted
+	if !failure {
+		counter := getAgentCounterPointer(agent, action, good)
+		*counter++
 	}
 }
 
-func printSimulationSummary(pool []*Agent, initialBuyFruitPrices []int, initialSellFruitPrices []int) {
+func printSimulationSummary(pool []*Agent) {
 	hunger := 0
 	coinsSum := 0
 	var buyFruitPrices []int
@@ -579,8 +627,8 @@ func printSimulationSummary(pool []*Agent, initialBuyFruitPrices []int, initialS
 
 }
 
-func printAgentSummary(agent Agent) {
-	fmt.Println(agent.numFruitBuys+agent.numFruitSales+agent.numSmoothieBuys+agent.numSmoothieSales+agent.numFruitGrowth+agent.numSmoothiesMade+agent.numSmoothiesConsumed, "[", agent.numFruitBuys, agent.buyFruitPrice, "], [", agent.numFruitSales, agent.sellFruitPrice, "]", agent.numSmoothieBuys, agent.numSmoothieSales, agent.numFruitGrowth, agent.numSmoothiesMade, agent.numSmoothiesConsumed)
+func printAgentSummary(message string, agent Agent) {
+	fmt.Println(message, agent.numFruitBuys+agent.numFruitSales+agent.numSmoothieBuys+agent.numSmoothieSales+agent.numFruitGrowth+agent.numSmoothiesMade+agent.numSmoothiesConsumed, "f b/pr:[", agent.numFruitBuys, agent.buyFruitPrice, "], f s/pr:[", agent.numFruitSales, agent.sellFruitPrice, "], s b/pr:[", agent.numSmoothieBuys, agent.buySmoothiePrice, "], s s/pr:[", agent.numSmoothieSales, agent.sellSmoothiePrice, "]", agent.numFruitGrowth, agent.numSmoothiesMade, agent.numSmoothiesConsumed)
 }
 
 func logAgentAction(id int, message string) {
@@ -597,29 +645,66 @@ func logTradeFailure(id int, message string) {
 func evolveAgents(pool *[]*Agent) {
 
 	sort.Slice(*pool, func(i, j int) bool {
-		return (*pool)[i].coins /*-(*pool)[i].hunger */ < (*pool)[j].coins /*-(*pool)[j].hunger */
+		//return (*pool)[i].coins-(*pool)[i].previousCoins < (*pool)[j].coins-(*pool)[j].previousCoins
+		return (*pool)[i].coins-(*pool)[i].hunger < (*pool)[j].coins-(*pool)[j].hunger
 	})
+	for _, a := range *pool {
+		a.previousCoins = a.coins
+		a.age += 1
+	}
 
 	//for i := 0; i < (len(*pool)); i++ {
 	//	if (*pool)[i].hunger > 10000 {
 	//*pool = removeAgent((*pool), i)
 	// }
 	//}
-	deathIndex := rand.IntN(3)
-	copiedIndex := rand.IntN(3) + 7
+	type AgentMetrics struct {
+		lastFruitBuys         int
+		lastFruitSales        int
+		lastSmoothieBuys      int
+		lastSmoothieSales     int
+		lastFruitGrowth       int
+		lastSmoothiesMade     int
+		lastSmoothiesConsumed int
+	}
+	var metrics []AgentMetrics = make([]AgentMetrics, len(*pool))
+	for _, a := range *pool {
+		metrics[a.id] = AgentMetrics{
+			lastFruitBuys:         a.numFruitBuys - metrics[a.id].lastFruitBuys,
+			lastFruitSales:        a.numFruitSales - metrics[a.id].lastFruitSales,
+			lastSmoothieBuys:      a.numSmoothieBuys - metrics[a.id].lastSmoothieBuys,
+			lastSmoothieSales:     a.numSmoothieSales - metrics[a.id].lastSmoothieSales,
+			lastFruitGrowth:       a.numFruitGrowth - metrics[a.id].lastFruitGrowth,
+			lastSmoothiesMade:     a.numSmoothiesMade - metrics[a.id].lastSmoothiesMade,
+			lastSmoothiesConsumed: a.numSmoothiesConsumed - metrics[a.id].lastSmoothiesConsumed,
+		}
+	}
+
+	fmt.Println("Poorest", metrics[(*pool)[0].id])
+	fmt.Println("Richest", metrics[(*pool)[len(*pool)-1].id])
+	deathIndex := 0               //rand.IntN(3)
+	copiedIndex := len(*pool) - 1 //rand.IntN(3) + 7
 	(*pool)[deathIndex].strategy = (*pool)[copiedIndex].strategy
 	(*pool)[deathIndex].item = (*pool)[copiedIndex].item
 	(*pool)[deathIndex].buyFruitPrice = (*pool)[copiedIndex].buyFruitPrice
 	(*pool)[deathIndex].buySmoothiePrice = (*pool)[copiedIndex].buySmoothiePrice
 	(*pool)[deathIndex].sellFruitPrice = (*pool)[copiedIndex].sellFruitPrice
 	(*pool)[deathIndex].sellSmoothiePrice = (*pool)[copiedIndex].sellSmoothiePrice
-	// (*pool)[0].hunger = 0
-	//coins:             1000,
-	//actionCompleted:   make(chan int),
-}
+	(*pool)[deathIndex].age = 0
 
-func removeAgent(pool []*Agent, index int) []*Agent {
-	ret := make([]*Agent, 0)
-	ret = append(ret, pool[:index]...)
-	return append(ret, pool[index+1:]...)
+	for i := range 2 {
+		randomizedIndex := i + 1
+		for j := range 16 {
+			(*pool)[randomizedIndex].strategy[j] = rand.Float32()
+		}
+
+		(*pool)[randomizedIndex].item = "none"
+		(*pool)[randomizedIndex].buyFruitPrice = rand.IntN(100)
+		(*pool)[randomizedIndex].buySmoothiePrice = rand.IntN(100)
+		(*pool)[randomizedIndex].sellFruitPrice = rand.IntN(100)
+		(*pool)[randomizedIndex].sellSmoothiePrice = rand.IntN(100)
+		(*pool)[randomizedIndex].age = 0
+
+	}
+
 }
